@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=RunPod GPU マネージャー
+Comment=GPUの空き状況、予約、起動・停止、Python実行を管理
+Exec=/usr/bin/python3 /usr/share/runpod-desktop/desktop.py
+Icon=jp.local.RunpodDesktop
+Terminal=false
+DBusActivatable=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=jp.local.RunpodDesktop

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=jp.local.RunpodDesktop
+Exec=/usr/bin/python3 /usr/share/runpod-desktop/desktop.py --gapplication-service

@@ -1,0 +1,7 @@
+[Unit]
+Description=Resume pending RunPod GPU reservation
+[Path]
+PathExists=%E/runpod-desktop/reservation.pending
+Unit=runpod-reservation.service
+[Install]
+WantedBy=default.target
