@@ -63,7 +63,8 @@ def reserve(offer, budget=PREFERRED_LIMIT, *, allow_jupyter=False, avoid_runtime
         gpu.prepare_connection()
         order = dict(model=offer.model, title=offer.name, cloud=offer.cloud, limit=str(limit),
                      name="desktop-gpu-" + uuid.uuid4().hex[:16], at=time.time(), previous=gpu.POD)
-        if "3090 Ti" in offer.model and (ROOT / "strata-3090ti.enabled").exists():
+        order["vram_gb"] = offer.memory
+        if offer.memory >= inventory.MIN_VRAM_GB and (ROOT / "strata-3090ti.enabled").exists():
             order["strata_iq3_s"] = True
         if allow_jupyter:
             order["allow_jupyter"] = True
@@ -86,6 +87,8 @@ def restart(key, pod, previous):
     # The caller holds the reservation lock. The worker observes this start and never resends it.
     if previous.get("pod") == pod["id"]:
         order = {k: previous[k] for k in ("name", "pod", "model", "title", "cloud", "limit")}
+        if "vram_gb" in previous:
+            order["vram_gb"] = previous["vram_gb"]
         if previous.get("allow_jupyter"):
             order["allow_jupyter"] = True
         if previous.get("strata_iq3_s"):
@@ -132,7 +135,10 @@ def adopt(order, pod):
         raise ValueError("Pod IDが不正です。")
     if gpu.POD != pod_id:
         gpu.atomic_write(ROOT / "active-host.conf", f"Host {gpu.HOST}\n    HostName pending.invalid\n")
-        gpu.atomic_write(gpu.target_file, json.dumps({"id": pod_id, "model": order["title"]}))
+        target = {"id": pod_id, "model": order["title"], "gpu_id": order["model"]}
+        if "vram_gb" in order:
+            target["vram_gb"] = order["vram_gb"]
+        gpu.atomic_write(gpu.target_file, json.dumps(target))
         gpu.reload_target()
 
 
@@ -213,7 +219,8 @@ def create(key, order):
                "gpu":{"id":order["model"],"count":1,"minCudaVersion":"12.8"},
                "ports":["22/tcp","8888/http"], "mounts":{}, "startJupyter":True, "startSsh":True,
                "env":{"PUBLIC_KEY":public,"RUNPOD_DESKTOP_PAIRING":proof}}
-    if order.get("strata_iq3_s") or ("3090 Ti" in order["model"] and (ROOT / "strata-3090ti.enabled").exists()):
+    order["vram_gb"] = selected.memory
+    if selected.memory >= inventory.MIN_VRAM_GB and (order.get("strata_iq3_s") or (ROOT / "strata-3090ti.enabled").exists()):
         payload["gpu"].update(minRamPerGpu=62, minCudaVersion="13.0")
     save(order, "submitted", "RunPodに発注しています。")
     try:

@@ -164,10 +164,10 @@ def inference_endpoint():
     try:
         ready = json.loads((gpu.PROFILE/'strata-ready.json').read_text())
     except (OSError, ValueError) as exc:
-        raise ConnectionError('GPUマネージャーで3090 TiのQwenを接続してください。') from exc
+        raise ConnectionError('GPUマネージャーで対象PodのQwenを接続してください。') from exc
     if not target or ready.get('pod') != target or ready.get('model') != MODEL:
-        raise ConnectionError('3090 TiのQwenに接続されていません。')
+        raise ConnectionError('選択中のPodのQwenに接続されていません。')
     port = int(ready['port'])
     if MODEL not in [row.get('id') for row in bridge.request(port, '/v1/models', timeout=3).get('data',[])]:
-        raise ConnectionError('3090 TiのQwenが応答していません。')
+        raise ConnectionError('選択中のPodのQwenが応答していません。')
     return f'http://127.0.0.1:{port}/v1', MODEL

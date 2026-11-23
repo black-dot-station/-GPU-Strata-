@@ -49,11 +49,18 @@ def prepare(ssh, source_port=None):
     subprocess.run(ssh + [cmd], input=code, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=18, check=True)
 
 
+def preflight(ssh):
+    code = Path(__file__).with_name('strata_pod.py').read_bytes()
+    result = subprocess.run(ssh + ['python3 - --preflight'], input=code, capture_output=True, timeout=30)
+    if result.returncode:
+        raise ValueError(result.stderr.decode(errors='replace').strip()[-320:] or 'PodのGPUを確認できませんでした。')
+
+
 def progress(ssh):
     check = f'cd {WORK} && cat status.json && if flock -n worker.lock true; then exit 3; fi'
     result = subprocess.run(ssh + [check], capture_output=True, timeout=12)
     if result.returncode == 255:
-        raise ConnectionError('3090 TiへのSSH接続を待っています。')
+        raise ConnectionError('PodへのSSH接続を待っています。')
     if result.returncode not in (0, 3):
         return {'stage':'preparing','message':'公式エンジンを準備しています。'}
     state = json.loads(result.stdout)
@@ -94,13 +101,15 @@ def verify_answer(port):
 
 
 def chat_route(host, port, pod, folder):
-    name = 'RunPod 3090 Ti · ' + pod
+    gpu_name = gpu.target_settings().get('model') or 'GPU'
+    name = f'RunPod {gpu_name} · {pod}'
     base = f'http://127.0.0.1:{port}/v1'
     rows = request(host, '/api/model-providers')['connections']
-    saved = next((item for item in rows if item['name']==name and item['baseUrl']==base and item['protocol']=='openai-chat'), None)
+    saved = next((item for item in rows if item['name'].startswith('RunPod ') and item['name'].endswith(' · '+pod)
+                  and item['baseUrl']==base and item['protocol']=='openai-chat'), None)
     if not saved:
         body = {'kind':'custom', 'name':name, 'baseUrl':base, 'protocol':'openai-chat',
-                'models':[{'id':MODEL,'name':'Qwen3.8-Flash-Next IQ3_S · 3090 Ti','contextMax':8192,'vision':False}]}
+                'models':[{'id':MODEL,'name':f'Qwen3.8-Flash-Next IQ3_S · {gpu_name}','contextMax':8192,'vision':False}]}
         rows = request(host, '/api/model-providers', body)['connections']
         saved = next(item for item in rows if item['name']==name and item['baseUrl']==base)
     choice = {'connectionId':saved['id'], 'modelId':MODEL}
@@ -114,7 +123,7 @@ def chat_route(host, port, pod, folder):
     chat_id = 's-runpod-' + uuid4().hex
     stamp = datetime.now(timezone.utc).isoformat()
     workspaces = request(host, '/api/workspaces')['workspaces']
-    chat = {'id':chat_id,'title':'RTX 3090 Ti · Qwen IQ3_S','createdAt':stamp,'updatedAt':stamp,
+    chat = {'id':chat_id,'title':f'{gpu_name} · Qwen IQ3_S','createdAt':stamp,'updatedAt':stamp,
             'messages':[],'tokensIn':0,'tokensOut':0,'preferences':{'mode':'manual','remoteModel':choice}}
     if workspaces:
         chat['workspace'] = workspaces[0]['path']
@@ -182,7 +191,7 @@ def connect(pod, ssh, folder, stop, notify):
                         if tunnel.poll() is not None:
                             raise ConnectionError('SSH転送を開始できませんでした。接続を再確認します。')
                     if not tested:
-                        notify('preparing', '3090 TiでQwenの返答を確認しています。')
+                        notify('preparing', 'PodでQwenの返答を確認しています。')
                         verify_answer(port)
                         if stop.is_set() or gpu.target_settings().get('id') != pod:
                             break
@@ -202,7 +211,7 @@ def connect(pod, ssh, folder, stop, notify):
                 notify('preparing', f'本家Strataの接続を確認中　{error}')
             stop.wait(20 if tested else 8)
     except Exception as error:
-        notify('failed', '3090 Tiに接続できませんでした。' + str(error)[:160])
+        notify('failed', 'Podに接続できませんでした。' + str(error)[:160])
     finally:
         if source is not None:
             source.close()

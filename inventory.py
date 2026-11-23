@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 import urllib.request
 
 import gpu
+from strata_pod import MIN_VRAM_GB
 
 ROOT = gpu.PROFILE
 DISK = Decimal("0.007")
@@ -102,6 +103,22 @@ def read_snapshot():
         return Snapshot(**data)
     except (FileNotFoundError, ValueError, TypeError, KeyError, ArithmeticError):
         return Snapshot()
+
+
+def strata_candidate(target):
+    """Return None for legacy targets missing catalog data; the Pod can still be probed over SSH."""
+    if not target.get("id"):
+        return False
+    model = target.get("gpu_id") or target.get("model") or ""
+    if model.upper().startswith(("AMD", "INTEL")):
+        return False
+    memory = target.get("vram_gb")
+    if isinstance(memory, int) and model.upper().startswith("NVIDIA"):
+        return memory >= MIN_VRAM_GB
+    for offer in read_snapshot().offers:
+        if model.casefold() in (offer.model.casefold(), offer.name.casefold()):
+            return offer.memory >= MIN_VRAM_GB
+    return None
 
 
 def retry_seconds(headers, now):

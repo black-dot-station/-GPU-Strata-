@@ -382,7 +382,9 @@ class Manager(Gtk.ApplicationWindow):
     def begin_work(self, pod, source):
         if self.signing_out:
             return
-        if self.strata.auto.get_active() and "3090 Ti" in gpu.target_settings().get("model", ""):
+        order = self.market.order or {}
+        jupyter_only = order.get("pod") == pod and order.get("connection_mode") == "jupyter"
+        if not jupyter_only and self.strata.auto.get_active() and rental.inventory.strata_candidate(gpu.target_settings()) is not False:
             self.follow_pod = self.follow_source = None
             self.stack.set_visible_child_name("strata")
             self.strata.activate()

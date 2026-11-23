@@ -176,7 +176,12 @@ def set_target(pod):
                        check=True, capture_output=True, timeout=15)
         if pod:
             model = (pod.get("gpu") or {}).get("id") or pod.get("name") or "GPU"
-            gpu.atomic_write(gpu.target_file, json.dumps({"id":pod["id"], "model":model}))
+            target = {"id":pod["id"], "model":model, "gpu_id":(pod.get("gpu") or {}).get("id", "")}
+            for offer in rental.inventory.read_snapshot().offers:
+                if offer.model == target["gpu_id"]:
+                    target["vram_gb"] = offer.memory
+                    break
+            gpu.atomic_write(gpu.target_file, json.dumps(target))
         elif gpu.target_file.exists():
             gpu.target_file.unlink()
         gpu.reload_target()

@@ -15,6 +15,8 @@ import time
 import urllib.request
 
 ROOT = Path('/workspace/.runpod-strata')
+MIN_VRAM_GB = 24
+MIN_FREE_BYTES = 20 * 1024**3
 PORT = 18697
 MODEL = 'qwen3.8-flash-next-iq3_s'
 CHECKPOINT = 'Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S'
@@ -101,10 +103,61 @@ def ranged_fetch(url, fd, total, label, report=status, fallback=None):
                 job.cancel()
 
 
+def select_device(devices):
+    for index, name, total, free, capability in devices:
+        if total >= MIN_VRAM_GB * 10**9 and free is not None and free >= MIN_FREE_BYTES and capability >= (7, 5):
+            return index, name
+    summary = '、'.join(f'{name}（合計{total / 10**9:.1f} GB' +
+                       (f'・空き{free / 1024**3:.1f} GiB）' if free is not None else '）')
+                       for _, name, total, free, _ in devices)
+    raise ValueError('NVIDIA GPU 1枚にVRAM 24 GB以上・空き20 GiB以上・Compute Capability 7.5以上が必要です。' + summary)
+
+
+def probe_device():
+    # The CUDA driver enumerates only devices visible to this process, including assigned MIG slices.
+    import ctypes as ct
+    try:
+        lib = ct.CDLL('libcuda.so.1')
+    except OSError as exc:
+        raise ValueError('PodでNVIDIA CUDAドライバーを利用できません。') from exc
+    def call(name, *args):
+        result = getattr(lib, name)(*args)
+        if result:
+            raise RuntimeError(f'PodのCUDAドライバーを確認できません（{name}, {result}）。')
+    call('cuInit', 0)
+    version, count = ct.c_int(), ct.c_int()
+    call('cuDriverGetVersion', ct.byref(version))
+    if version.value < 13000:
+        raise ValueError('公式エンジンにはCUDA 13対応のNVIDIAドライバーが必要です。')
+    call('cuDeviceGetCount', ct.byref(count))
+    devices = []
+    for index in range(count.value):
+        device, major, minor = ct.c_int(), ct.c_int(), ct.c_int()
+        name = ct.create_string_buffer(256)
+        total, free = ct.c_size_t(), ct.c_size_t()
+        call('cuDeviceGet', ct.byref(device), index)
+        call('cuDeviceGetName', name, len(name), device)
+        call('cuDeviceComputeCapability', ct.byref(major), ct.byref(minor), device)
+        call('cuDeviceTotalMem_v2', ct.byref(total), device)
+        available = None
+        if total.value >= MIN_VRAM_GB * 10**9 and (major.value, minor.value) >= (7, 5):
+            context = ct.c_void_p()
+            call('cuDevicePrimaryCtxRetain', ct.byref(context), device)
+            try:
+                call('cuCtxSetCurrent', context)
+                usable = ct.c_size_t()
+                call('cuMemGetInfo_v2', ct.byref(free), ct.byref(usable))
+                available = free.value
+            finally:
+                call('cuCtxSetCurrent', None)
+                call('cuDevicePrimaryCtxRelease_v2', device)
+        devices.append((index, name.value.decode(errors='replace'), total.value, available, (major.value, minor.value)))
+        if available is not None and available >= MIN_FREE_BYTES:
+            break
+    return select_device(devices)
+
+
 def resource_budget():
-    gpu = subprocess.check_output(['nvidia-smi','--query-gpu=name,memory.free,driver_version','--format=csv,noheader,nounits'], text=True).strip().split(', ')
-    if len(gpu) != 3 or '3090 Ti' not in gpu[0] or int(gpu[1]) < 20000 or int(gpu[2].split('.')[0]) < 580:
-        raise ValueError('この構成には空き20 GiB以上のRTX 3090 TiとCUDA 13対応ドライバーが必要です。')
     cgroup = Path('/sys/fs/cgroup')
     limit = (cgroup / 'memory.max').read_text().strip()
     avail = next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemAvailable:'))
@@ -142,6 +195,9 @@ def hold_file(fd):
 
 
 def serve():
+    index, gpu_name = probe_device()
+    visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+    selector = visible.split(',')[index].strip() if visible else str(index)
     available = resource_budget()
     files = [ROOT / f'{CHECKPOINT}-{i:05}-of-00002.gguf' for i in (1, 2)]
     disk_free = shutil.disk_usage(ROOT).free
@@ -191,7 +247,8 @@ def serve():
     status('公式ツールでQwenを準備しています')
     control, engine, pack = ROOT/'control', ROOT/'engine', ROOT/'pack'
     python = str(control/'python/bin/python3')
-    env = dict(os.environ, PYTHONUNBUFFERED='1', LD_LIBRARY_PATH=str(engine) + ':' + os.environ.get('LD_LIBRARY_PATH',''))
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES=selector, PYTHONUNBUFFERED='1',
+               LD_LIBRARY_PATH=str(engine) + ':' + os.environ.get('LD_LIBRARY_PATH',''))
     subprocess.run([python,str(control/'tools/iq_pack.py'),'--gguf',str(files[0]),'--out',str(pack)], cwd=control, env=env, check=True)
     cfg = dict(exe=str(engine/'strata'), cwd=str(control), tokenizer=str(pack/'tokenizer'), model_name=MODEL,
                log=str(ROOT/'engine.log'), args=['--pack',str(pack),'--native',str(files[0]),'--ple-gguf',str(files[1]),
@@ -199,12 +256,25 @@ def serve():
                '--prefill','auto','--spec','4','--max-context','8192','--pool-workers','6','--vram-reserve-mib','1536'])
     config = ROOT/'engine.json'
     config.write_text(json.dumps(cfg))
-    status('3090 TiでQwenを読み込んでいます','starting')
+    status(f'{gpu_name}でQwenを読み込んでいます','starting')
     subprocess.run([python,'-m','serve.server','--engine','strata','--config',str(config),'--host','127.0.0.1','--port',str(PORT)],
                    cwd=control, env=env, check=True)
 
 
 if __name__ == '__main__':
+    if sys.argv[1:] == ['--preflight']:
+        try:
+            lockfile = ROOT / 'worker.lock'
+            if lockfile.exists():
+                with lockfile.open('r') as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        sys.exit(0)  # The resident engine can already be using the card's VRAM.
+            probe_device()
+        except (ValueError, OSError, RuntimeError) as exc:
+            sys.exit(str(exc))
+        sys.exit(0)
     if len(sys.argv) == 3 and sys.argv[1] == '--hold':
         hold_file(int(sys.argv[2]))
         sys.exit(0)

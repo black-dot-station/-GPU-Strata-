@@ -3,6 +3,7 @@ import threading
 from urllib.parse import urlsplit
 
 import gpu
+import inventory
 import strata_bridge as bridge
 import strata_setup
 from pod_web import Gio, GLib, Gtk, WebKit
@@ -17,7 +18,7 @@ class StrataPage(Gtk.Box):
         bar = Gtk.Box(spacing=12, margin_start=14, margin_end=14)
         self.indicator = Gtk.Label(label='GPU未接続', xalign=0, hexpand=True)
         bar.append(self.indicator)
-        self.auto = Gtk.CheckButton(label='3090 Tiを借りたら自動で開く')
+        self.auto = Gtk.CheckButton(label='VRAM 24 GB以上のNVIDIA GPUで自動接続')
         self.auto.set_active(bridge.OPTION.exists())
         self.auto.connect('toggled', self.preference)
         bar.append(self.auto)
@@ -34,7 +35,7 @@ class StrataPage(Gtk.Box):
         self.append(controls)
         self.pages = Gtk.Stack(vexpand=True, hexpand=True)
         waiting = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
-        self.note = Gtk.Label(label='RTX 3090 Tiを選んでください。', wrap=True, justify=Gtk.Justification.CENTER)
+        self.note = Gtk.Label(label='VRAM 24 GB以上のNVIDIA GPUを選んでください。', wrap=True, justify=Gtk.Justification.CENTER)
         self.note.add_css_class('heading')
         waiting.append(self.note)
         self.retry = Gtk.Button(label='再接続', halign=Gtk.Align.CENTER)
@@ -46,8 +47,11 @@ class StrataPage(Gtk.Box):
     def setup(self):
         if not self.setup_btn.get_sensitive():
             return
-        self.setup_btn.set_sensitive(False)
         self.auto.set_active(True)
+        if gpu.target_settings().get('id'):
+            self.activate(retry=True)
+            return
+        self.setup_btn.set_sensitive(False)
         def message(value):
             GLib.idle_add(self.info.set_text, value)
         def work():
@@ -101,7 +105,8 @@ class StrataPage(Gtk.Box):
             self.pages.remove(self.view)
         self.view = self.origin = None
         self.indicator.set_text('GPU未接続')
-        self.note.set_text('RTX 3090 Tiの接続を待っています。')
+        self.note.set_text('GPUの接続を待っています。')
+        self.setup_btn.set_sensitive(True)
         self.retry.set_visible(True)
 
     def shutdown(self):
@@ -109,22 +114,23 @@ class StrataPage(Gtk.Box):
         self.reset()
 
     def activate(self, retry=False):
-        if self.closed or not self.setup_btn.get_sensitive():
+        if self.closed:
             return
         target = gpu.target_settings()
+        if self.cancel and target.get('id') != self.pod:
+            self.reset()
+        if not self.setup_btn.get_sensitive():
+            return
         if target.get('id') != self.pod or retry:
             self.reset()
-        if '3090 Ti' not in target.get('model',''):
-            self.note.set_text('「GPU一覧・予約」でRTX 3090 Tiを選んでください。')
+        if inventory.strata_candidate(target) is False:
+            self.note.set_text('「GPU一覧・予約」でVRAM 24 GB以上のNVIDIA GPUを1枚選んでください。')
             return
         if self.cancel:
             return
-        if not strata_setup.source_paths():
-            if self.auto.get_active():
-                self.setup()
-            else:
-                self.note.set_text('「AIセットアップ」を押すと、自宅SSDにQwenを用意して3090 Tiにつなぎます。')
-                self.retry.set_visible(False)
+        if not strata_setup.source_paths() and not self.auto.get_active():
+            self.note.set_text('「AIセットアップ」を押すと、GPUを確認して自宅SSDにQwenを用意します。')
+            self.retry.set_visible(False)
             return
         gpu.reload_target()
         self.pod = target['id']
@@ -134,19 +140,31 @@ class StrataPage(Gtk.Box):
             self.note.set_text(str(exc))
             return
         self.retry.set_visible(False)
-        self.note.set_text('3090 Ti の状態を確認しています。')
+        self.note.set_text('Podの状態とVRAMを確認しています。')
+        self.setup_btn.set_sensitive(False)
         self.cancel = bridge.ConnectionStop()
         cancel, generation, pod, folder = self.cancel, self.generation, self.pod, gpu.STORE
         def notify(stage, message):
             GLib.idle_add(self.update_state, generation, stage, message)
+        def local_progress(message):
+            if cancel.is_set():
+                raise InterruptedError('接続先が変更されました。')
+            notify('preparing', message)
         def run():
             try:
                 state = gpu.rest(gpu.load_key(), '/v2/pods/'+pod)
                 if state.get('id') != pod or state.get('status') != 'RUNNING':
                     notify('failed','Podは稼働していません。GPU一覧から起動できます。')
                     return
-                if '3090 Ti' not in (state.get('gpu') or {}).get('id','') or gpu.address_changed(state):
-                    notify('failed','3090 TiのSSH接続が準備できてから再接続してください。')
+                if not state.get('gpu') or gpu.address_changed(state):
+                    notify('failed','GPU Podの直接SSH接続が準備できてから再接続してください。')
+                    return
+                bridge.preflight(ssh)
+                if cancel.is_set():
+                    return
+                if not strata_setup.source_paths():
+                    strata_setup.setup_local(local_progress)
+                if cancel.is_set():
                     return
                 bridge.connect(pod, ssh, folder, cancel, notify)
             except Exception as error:
@@ -157,7 +175,9 @@ class StrataPage(Gtk.Box):
         if generation != self.generation or self.pod != gpu.target_settings().get('id'):
             return False
         if stage == 'ready':
-            self.indicator.set_text('○　RTX 3090 Ti　·　Qwen IQ3_S 応答確認済み')
+            self.setup_btn.set_sensitive(True)
+            model = gpu.target_settings().get('model') or 'GPU'
+            self.indicator.set_text(f'○　{model}　·　Qwen IQ3_S 応答確認済み')
             if self.view is None:
                 self.origin = urlsplit(value).netloc
                 self.view = WebKit.WebView(network_session=WebKit.NetworkSession.new_ephemeral())
@@ -167,6 +187,8 @@ class StrataPage(Gtk.Box):
             self.pages.set_visible_child_name('chat')
             self.view.load_uri(value)
         else:
+            if stage == 'failed':
+                self.setup_btn.set_sensitive(True)
             self.indicator.set_text('準備中' if stage == 'preparing' else 'GPU未接続')
             self.pages.set_visible_child_name('status')
             self.note.set_text(value)
