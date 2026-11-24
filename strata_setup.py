@@ -83,6 +83,15 @@ def source_paths():
         return []
 
 
+def unreachable_saved_files():
+    """Saved model files that the manifest records but that cannot be reached now, e.g. on an unplugged drive."""
+    try:
+        rows = json.loads(MANIFEST.read_text())['files']
+        return [Path(row['path']) for row in rows if not Path(row['path']).exists()]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
 def setup_local(notify):
     """Safe to repeat. Reuse matching weights already saved by either official or older installations."""
     gpu.PROFILE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -91,6 +100,11 @@ def setup_local(notify):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('AIセットアップはすでに進行中です。')
+        missing = unreachable_saved_files()
+        if missing:
+            # Downloading again would fill this PC with a second 83 GB copy of files that already exist.
+            raise ValueError(f'保存済みのQwenが見つかりません（{missing[0].parent}）。'
+                             '外付けドライブを接続してから、もう一度「AIセットアップ」を押してください。')
         notify('本家Strataを確認しています。')
         host = home_app(notify)
         if source_paths():

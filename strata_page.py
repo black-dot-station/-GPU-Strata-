@@ -150,10 +150,6 @@ class StrataPage(Gtk.Box):
         cancel, generation, pod, folder = self.cancel, self.generation, self.pod, gpu.STORE
         def notify(stage, message):
             GLib.idle_add(self.update_state, generation, stage, message)
-        def local_progress(message):
-            if cancel.is_set():
-                raise InterruptedError('接続先が変更されました。')
-            notify('preparing', message)
         def run():
             try:
                 state = gpu.rest(gpu.load_key(), '/v2/pods/'+pod)
@@ -167,9 +163,9 @@ class StrataPage(Gtk.Box):
                 if cancel.is_set():
                     return
                 if not strata_setup.source_paths():
-                    strata_setup.setup_local(local_progress)
-                if cancel.is_set():
-                    return
+                    # Never make a paid Pod wait for an 83 GB download to this PC (or re-download a
+                    # copy that sits on an unplugged drive). The Pod fetches the pinned files itself.
+                    notify('preparing', '自宅SSDのQwenが使えないため、PodがHugging Faceから直接取得します。')
                 bridge.connect(pod, ssh, folder, cancel, notify)
             except Exception as error:
                 notify('failed', str(error)[:180])
