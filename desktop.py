@@ -218,6 +218,35 @@ class Manager(Gtk.ApplicationWindow):
         for item in (self.repair_btn, self.start_btn, self.stop_btn):
             power.append(item)
         body.append(power)
+        self.ssh_panel = Gtk.Expander(label="SSH接続の詳細")
+        details = box(8, True, "panel")
+        grid = Gtk.Grid(column_spacing=14, row_spacing=5)
+        self.ssh_fields = {}
+        for line, (key, name) in enumerate((("address", "接続先"), ("identity", "このPCの鍵"),
+                                            ("host_fp", "Podのホスト鍵"))):
+            grid.attach(label(name, "caption"), 0, line, 1, 1)
+            value = label("—")
+            value.set_selectable(True)
+            value.set_wrap(True)
+            value.set_hexpand(True)
+            grid.attach(value, 1, line, 1, 1)
+            self.ssh_fields[key] = value
+        details.append(grid)
+        ssh_actions = box(8)
+        self.ssh_result = label("", "caption")
+        self.ssh_result.set_wrap(True)
+        self.ssh_result.set_hexpand(True)
+        ssh_actions.append(self.ssh_result)
+        self.ssh_test_btn = button("接続テスト", self.ssh_test)
+        ssh_actions.append(self.ssh_test_btn)
+        self.ssh_copy_btn = button("接続コマンドをコピー", self.copy_ssh_command)
+        self.ssh_copy_btn.set_tooltip_text("このアプリと同じ鍵・接続先・ホスト鍵の照合で入る ssh コマンドをコピーします。")
+        ssh_actions.append(self.ssh_copy_btn)
+        details.append(ssh_actions)
+        self.ssh_panel.set_child(details)
+        self.ssh_panel.connect("notify::expanded", lambda *_: self.show_ssh_details())
+        self.ssh_command = None
+        body.append(self.ssh_panel)
         log_panel = box(6, True, "panel")
         log_panel.set_vexpand(True)
         log_header = box(6)
@@ -606,12 +635,54 @@ class Manager(Gtk.ApplicationWindow):
         self.notice.set_text("  ".join(issues) or note)
         self.stamp.set_text(datetime.datetime.now().strftime("%H:%M:%S 更新"))
         self.sync_buttons()
+        self.show_ssh_details()
         if self.stopping_pod == gpu.POD and key in ("EXITED", "TERMINATED"):
             self.stopping_pod = None
             self.strata.reset()
             self.lab_page.discard()
             self.stack.set_visible_child_name("market")
             self.market.message.set_text("GPUを停止しました。次に使うGPUを選べます。")
+
+    def show_ssh_details(self):
+        if not self.ssh_panel.get_expanded():
+            return
+        def shown(info, error):
+            if error:
+                self.ssh_result.set_text(error)
+                return
+            if info["pod"] != gpu.POD:
+                return
+            fields = self.ssh_fields
+            fields["address"].set_text(info["address"] or "未設定（Podの起動後に自動で設定されます）")
+            fields["identity"].set_text(info["identity"] + "\n" + (info["identity_fp"] or "公開鍵を読めません"))
+            fields["host_fp"].set_text(info["host_fp"] or "未記録")
+            self.ssh_command = info["command"]
+            self.ssh_copy_btn.set_sensitive(bool(info["command"]))
+        background(gpu.ssh_details, shown)
+
+    def ssh_test(self):
+        self.ssh_test_btn.set_sensitive(False)
+        self.ssh_result.set_text("このPCの鍵でPodにログインしています…")
+        pod = gpu.POD
+        def done(value, error):
+            self.ssh_test_btn.set_sensitive(True)
+            if error:
+                reason = error.strip().splitlines()[-1] if error.strip() else ""
+                self.ssh_result.set_text(f"接続できませんでした。{reason[:160]}")
+                return
+            answered, seconds = value
+            if answered and answered != pod:
+                self.ssh_result.set_text(f"別のPod（{answered}）が応答しました。「SSH 再接続」で接続先を更新してください。")
+            elif answered:
+                self.ssh_result.set_text(f"Pod {answered} にログインできました（{seconds:.1f}秒）。")
+            else:
+                self.ssh_result.set_text(f"ログインできました（{seconds:.1f}秒）。Pod IDは確認できませんでした。")
+        background(gpu.ssh_check, done)
+
+    def copy_ssh_command(self):
+        if self.ssh_command:
+            self.get_clipboard().set(self.ssh_command)
+            self.ssh_result.set_text("接続コマンドをコピーしました。端末に貼り付けて使えます。")
 
     def queue_log(self, text):
         with self.lock:

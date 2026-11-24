@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 import gi
@@ -308,6 +309,41 @@ def proxy_shell(state):
     return ["ssh", "-F", "/dev/null", "-t", "-oForwardAgent=no", "-oClearAllForwardings=yes",
             "-oStrictHostKeyChecking=ask", "-oIdentitiesOnly=yes", "-oConnectTimeout=7",
             "-i", str(IDENTITY), "-p", str(port), user + "@ssh.runpod.io"]
+
+
+def fingerprint(path):
+    """SHA256 fingerprint of a public key or known-hosts file, or None when it cannot be read."""
+    try:
+        line = run(["ssh-keygen", "-l", "-E", "sha256", "-f", str(path)], timeout=5).splitlines()[0]
+        return line.split()[1]
+    except (OSError, RuntimeError, subprocess.SubprocessError, IndexError):
+        return None
+
+
+def ssh_details():
+    """The key, address and pinned host key that this PC uses for the selected Pod."""
+    public = IDENTITY.with_suffix(".pub")
+    info = {"pod": POD, "identity": str(IDENTITY), "identity_fp": None,
+            "address": None, "host_fp": None, "command": None}
+    if public.is_file():
+        info["identity_fp"] = fingerprint(public)
+    saved = STORE / "endpoint.json"
+    if POD and saved.is_file():
+        cfg = json.loads(saved.read_text())
+        endpoint_options(cfg["ip"], cfg["port"], cfg["pin"])
+        info["address"] = f"{cfg['ip']}:{int(cfg['port'])}"
+        if (STORE / cfg["pin"]).is_file():
+            info["host_fp"] = fingerprint(STORE / cfg["pin"])
+        info["command"] = shlex.join(ssh())
+    return info
+
+
+def ssh_check():
+    """Log in with this app's own settings and return the Pod ID that answered and the time taken."""
+    started = time.monotonic()
+    reply = run([*ssh(), 'if test -r /etc/rp_environment; then . /etc/rp_environment; fi; '
+                 'printf %s "$RUNPOD_POD_ID"'], timeout=20)
+    return reply.strip(), time.monotonic() - started
 
 
 def telemetry():
