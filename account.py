@@ -174,6 +174,12 @@ def set_target(pod):
                 raise ValueError("予約の処理中です。完了後に接続先を変更できます。")
         subprocess.run(["systemctl", "--user", "enable", "--now", "runpod-reservation.path"],
                        check=True, capture_output=True, timeout=15)
+        import idle
+        if idle.settings()[0]:
+            try:
+                idle.ensure_timer()
+            except (OSError, subprocess.SubprocessError):
+                pass  # Auto-stop is optional; the Pod screen shows its setting.
         if pod:
             model = (pod.get("gpu") or {}).get("id") or pod.get("name") or "GPU"
             target = {"id":pod["id"], "model":model, "gpu_id":(pod.get("gpu") or {}).get("id", "")}

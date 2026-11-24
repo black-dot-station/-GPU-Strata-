@@ -87,6 +87,10 @@ class StrataPage(Gtk.Box):
             return False
         threading.Thread(target=work, daemon=True).start()
 
+    def working(self):
+        """True while Strata is being prepared, which can take minutes without GPU use."""
+        return not self.closed and not self.setup_btn.get_sensitive()
+
     def preference(self, button):
         if button.get_active():
             bridge.OPTION.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

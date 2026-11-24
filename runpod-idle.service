@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop idle RunPod GPU Pods
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B /usr/share/runpod-desktop/idle.py
+UMask=0077

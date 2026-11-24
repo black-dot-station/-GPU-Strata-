@@ -13,12 +13,12 @@ with tempfile.TemporaryDirectory() as tmp:
         path.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(src/source,path)
         path.chmod(mode)
-    for file in ('brand.py','guide.py','gpu.py','pod_web.py','account.py','desktop.py','market.py','inventory.py','rental.py','jupyter_gpu.py','strata_bridge.py','strata_page.py','strata_pod.py','strata_source.py','strata_setup.py'):
+    for file in ('brand.py','guide.py','gpu.py','pod_web.py','account.py','desktop.py','market.py','inventory.py','rental.py','jupyter_gpu.py','strata_bridge.py','strata_page.py','strata_pod.py','strata_source.py','strata_setup.py','idle.py'):
         deploy(file,'usr/share/runpod-desktop/'+file)
     deploy('gpu-icon.png','usr/share/icons/hicolor/256x256/apps/jp.local.RunpodDesktop.png')
     deploy('jp.local.RunpodDesktop.desktop','usr/share/applications/jp.local.RunpodDesktop.desktop')
     deploy('jp.local.RunpodDesktop.service','usr/share/dbus-1/services/jp.local.RunpodDesktop.service')
-    for unit in ('runpod-reservation.path','runpod-reservation.service'):
+    for unit in ('runpod-reservation.path','runpod-reservation.service','runpod-idle.service','runpod-idle.timer'):
         deploy(unit,'usr/lib/systemd/user/'+unit)
     deploy('runpod-python','usr/bin/runpod-python',0o755)
     control=root/'DEBIAN/control'

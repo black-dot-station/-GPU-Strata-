@@ -3,8 +3,10 @@ import codecs
 import datetime
 from pathlib import Path
 import subprocess
+from contextlib import suppress
 import sys
 import threading
+import time
 from time import monotonic
 
 import gi
@@ -15,6 +17,7 @@ import gpu
 import account
 import brand
 import guide
+import idle
 import market
 import pod_web
 import strata_page
@@ -218,6 +221,24 @@ class Manager(Gtk.ApplicationWindow):
         for item in (self.repair_btn, self.start_btn, self.stop_btn):
             power.append(item)
         body.append(power)
+        idle_row = box(8)
+        enabled, minutes = idle.settings()
+        self.idle_check = Gtk.CheckButton(label="使っていないGPUを自動停止", active=enabled)
+        self.idle_check.set_tooltip_text("GPU使用率がほぼ0%の状態が続いたら、ウィンドウを閉じていても自動で停止します。")
+        idle_row.append(self.idle_check)
+        self.idle_minutes = Gtk.DropDown.new_from_strings([f"{m}分" for m in idle.CHOICES])
+        self.idle_minutes.set_selected(idle.CHOICES.index(minutes))
+        idle_row.append(self.idle_minutes)
+        self.idle_status = label("", "caption")
+        self.idle_status.set_wrap(True)
+        self.idle_status.set_hexpand(True)
+        idle_row.append(self.idle_status)
+        body.append(idle_row)
+        self.idle_check.connect("toggled", lambda *_: self.idle_changed())
+        self.idle_minutes.connect("notify::selected", lambda *_: self.idle_changed())
+        self.show_idle()
+        if enabled:
+            background(idle.ensure_timer, lambda *_: None)
         self.ssh_panel = Gtk.Expander(label="SSH接続の詳細")
         details = box(8, True, "panel")
         grid = Gtk.Grid(column_spacing=14, row_spacing=5)
@@ -275,6 +296,7 @@ class Manager(Gtk.ApplicationWindow):
         self.account_page.title.connect("notify::label", self.guide.refresh)
         self.poll_timer = GLib.timeout_add_seconds(12, self.poll_pod)
         self.log_timer = GLib.timeout_add(180, self.flush_log)
+        self.hold_timer = GLib.timeout_add_seconds(30, self.keep_awake)
         if not gpu.connection().get("configured"):
             self.stack.set_visible_child_name("account")
         GLib.idle_add(self.check_connection)
@@ -540,7 +562,44 @@ class Manager(Gtk.ApplicationWindow):
         self.lab_page.shutdown()
         GLib.source_remove(self.poll_timer)
         GLib.source_remove(self.log_timer)
+        GLib.source_remove(self.hold_timer)
         return False
+
+    def keep_awake(self):
+        # Python jobs, GPU tests and Strata preparation can run for minutes with little GPU use.
+        if self.busy or self.power_busy or self.strata.working():
+            with suppress(OSError):
+                idle.hold()
+        return True
+
+    def idle_changed(self):
+        enabled = self.idle_check.get_active()
+        minutes = idle.CHOICES[self.idle_minutes.get_selected()]
+        try:
+            idle.save_settings(enabled, minutes)
+        except OSError as exc:
+            self.idle_status.set_text(f"設定を保存できませんでした。{exc}")
+            return
+        self.show_idle()
+        if enabled:
+            def started(_, error):
+                if error:
+                    self.idle_status.set_text("自動停止のタイマーを開始できませんでした。" + error[:120])
+            background(idle.ensure_timer, started)
+
+    def show_idle(self):
+        enabled, minutes = idle.settings()
+        self.idle_minutes.set_sensitive(enabled)
+        if not enabled:
+            self.idle_status.set_text("自動停止はオフです。使い終わったら「停止」を押してください。")
+            return
+        entry = idle.read_state().get(gpu.POD) or {}
+        stop_at = entry.get("stop_at")
+        if isinstance(stop_at, (int, float)) and self.state.get("status") == "RUNNING":
+            left = max(0, int((stop_at - time.time() + 59) // 60))
+            self.idle_status.set_text(f"GPUが使われていません。あと約{left}分で自動停止します。")
+        else:
+            self.idle_status.set_text(f"GPU使用率0%が{minutes}分続くと自動停止します。")
 
     def sync_buttons(self):
         allowed = self.state.get("actions") or []
@@ -635,6 +694,7 @@ class Manager(Gtk.ApplicationWindow):
         self.notice.set_text("  ".join(issues) or note)
         self.stamp.set_text(datetime.datetime.now().strftime("%H:%M:%S 更新"))
         self.sync_buttons()
+        self.show_idle()
         self.show_ssh_details()
         if self.stopping_pod == gpu.POD and key in ("EXITED", "TERMINATED"):
             self.stopping_pod = None
