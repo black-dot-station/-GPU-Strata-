@@ -58,6 +58,10 @@ def install_asset(label, name, expected):
         marker = 'setup.py' if label == 'control' else 'engine-component.json'
         root = next(folder.rglob(marker)).parent
         (root / '.release').write_text(expected)
+        if dest.exists() or dest.is_symlink():
+            # An older or unfinished release is left in the same workspace after an upgrade.
+            # Move it into the temporary folder, which removes it on exit.
+            dest.rename(Path(temp) / 'previous')
         root.rename(dest)
 
 
