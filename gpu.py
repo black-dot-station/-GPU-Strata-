@@ -119,7 +119,13 @@ def request(path, payload=None, *, key=None):
         body = response.read()
         if response.status >= 300:
             try:
-                detail = str(json.loads(body).get("detail", ""))[:300]
+                data = json.loads(body)
+                detail = str(data.get("detail", ""))
+                errors = data.get("errors")
+                if isinstance(errors, list) and errors:
+                    # Validation failures carry the actual reason here, not in "detail".
+                    detail = (detail + " " + " / ".join(map(str, errors))).strip()
+                detail = detail[:300]
             except (ValueError, AttributeError):
                 detail = response.reason
             raise ApiError(response.status, detail)

@@ -220,7 +220,9 @@ def create(key, order):
                "ports":["22/tcp","8888/http"], "mounts":{}, "startJupyter":True, "startSsh":True,
                "env":{"PUBLIC_KEY":public,"RUNPOD_DESKTOP_PAIRING":proof}}
     order["vram_gb"] = selected.memory
-    if selected.memory >= inventory.MIN_VRAM_GB and (order.get("strata_iq3_s") or (ROOT / "strata-3090ti.enabled").exists()):
+    strata_terms = (selected.memory >= inventory.MIN_VRAM_GB and not order.get("strata_relaxed")
+                    and (order.get("strata_iq3_s") or (ROOT / "strata-3090ti.enabled").exists()))
+    if strata_terms:
         payload["gpu"].update(minRamPerGpu=62, minCudaVersion="13.0")
     save(order, "submitted", "RunPodに発注しています。")
     try:
@@ -228,6 +230,13 @@ def create(key, order):
     except gpu.ApiError as exc:
         detail = exc.detail.lower()
         if record_account_refusal(order, exc):
+            return
+        if strata_terms and exc.status in (400, 404, 409, 422):
+            # The stock list does not filter by these terms, so a listed GPU can lack a host with
+            # 62 GB RAM and CUDA 13. RunPod refused before creating anything: order it once more without them.
+            order["strata_relaxed"] = True
+            save(order, "waiting", "Strata用の条件（RAM 62 GB・CUDA 13）に合うマシンがないため、通常の条件で発注し直します。")
+            create(key, order)
             return
         if exc.status in (400, 409, 500, 503) and any(t in detail for t in
                 ("no capacity","no longer available","no available","insufficient capacity","out of capacity","no instances","not enough gpu","no longer any gpu","no longer have any instances","no machine available")):
