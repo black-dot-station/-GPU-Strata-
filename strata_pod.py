@@ -161,14 +161,23 @@ def probe_device():
     return select_device(devices)
 
 
-def resource_budget():
-    cgroup = Path('/sys/fs/cgroup')
-    limit = (cgroup / 'memory.max').read_text().strip()
-    avail = next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemAvailable:'))
-    if limit != 'max':
-        current = int((cgroup / 'memory.current').read_text())
-        stats = {k:int(v) for k,v in (s.split() for s in (cgroup/'memory.stat').read_text().splitlines())}
-        avail = min(avail, int(limit) - current + stats.get('inactive_file',0))
+def resource_budget(cgroup=Path('/sys/fs/cgroup'), meminfo=Path('/proc/meminfo')):
+    """RAM this container can still use: the host's MemAvailable, capped by its cgroup limit."""
+    avail = next(int(x.split()[1])*1024 for x in meminfo.read_text().splitlines() if x.startswith('MemAvailable:'))
+    def stats(path):
+        return {k: int(v) for k, v in (s.split() for s in path.read_text().splitlines())}
+    if (cgroup / 'memory.max').is_file():  # cgroup v2
+        limit = (cgroup / 'memory.max').read_text().strip()
+        if limit != 'max':
+            current = int((cgroup / 'memory.current').read_text())
+            avail = min(avail, int(limit) - current + stats(cgroup / 'memory.stat').get('inactive_file', 0))
+    elif (cgroup / 'memory' / 'memory.limit_in_bytes').is_file():  # cgroup v1, used by some RunPod hosts
+        v1 = cgroup / 'memory'
+        limit = int((v1 / 'memory.limit_in_bytes').read_text())
+        if limit < 1 << 60:  # an unlimited v1 group reports a value near 2**63
+            usage = int((v1 / 'memory.usage_in_bytes').read_text())
+            info = stats(v1 / 'memory.stat')
+            avail = min(avail, limit - usage + info.get('total_inactive_file', info.get('inactive_file', 0)))
     return avail
 
 
